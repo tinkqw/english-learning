@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>登录 · 生词本</title>
+<style>
+:root {
+  --ground: #F9F9F9; --surface: #FFFFFF; --border: #E6E5E4;
+  --text: #111213; --text-sub: #2C3033; --text-mute: #4F5359;
+  --brand-text: #252A4D; --warn: #6B2827;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #111213; --surface: #1A1C1F; --border: #2A2D31;
+    --text: #E6E5E4; --text-sub: #C3C6C9; --text-mute: #8E959D;
+    --brand-text: #6DD9F2; --warn: #E8A29A;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #111213; --surface: #1A1C1F; --border: #2A2D31;
+  --text: #E6E5E4; --text-sub: #C3C6C9; --text-mute: #8E959D;
+  --brand-text: #6DD9F2; --warn: #E8A29A;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--ground); color: var(--text); min-height: 100vh;
+  font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  display: grid; place-items: center; padding: 20px;
+}
+.box { width: 100%; max-width: 320px; display: flex; flex-direction: column; gap: 14px; }
+h1 { font-size: 24px; font-weight: 600; color: var(--brand-text); text-align: center; }
+input {
+  width: 100%; padding: 10px 12px; font-size: 15px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+button {
+  padding: 10px; font-size: 15px; font-weight: 600; border: none; border-radius: 10px;
+  background: var(--brand-text); color: var(--surface); cursor: pointer;
+}
+.err { font-size: 13.5px; color: var(--warn); text-align: center; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<form class="box" id="f">
+  <h1>生词本</h1>
+  <input id="pw" type="password" placeholder="密码" autocomplete="current-password" autofocus>
+  <button type="submit">进入</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+document.getElementById('f').onsubmit = async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('err');
+  err.textContent = '';
+  try {
+    const r = await fetch('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: document.getElementById('pw').value }),
+    });
+    if (r.ok) { location.href = '/'; return; }
+    err.textContent = '密码不对';
+  } catch { err.textContent = '网络出错，稍后再试'; }
+};
+</script>
+</body>
+</html>

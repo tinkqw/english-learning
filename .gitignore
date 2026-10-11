@@ -1,0 +1,23 @@
+# 本地配置与凭证
+.env
+*.env
+!env.example
+
+# 个人学习数据（只在本机）
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+bitable-state.json
+uat_token.json
+vocab-data.json
+oral-transcripts/
+logs/
+
+# 构建产物
+easydict/DerivedData*/
+easydict/build/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store

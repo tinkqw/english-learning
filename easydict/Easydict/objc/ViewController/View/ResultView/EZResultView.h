@@ -1,0 +1,43 @@
+//
+//  EZResultView.h
+//  Easydict
+//
+//  Created by tisfeng on 2022/11/9.
+//  Copyright © 2022 izual. All rights reserved.
+//
+
+#import <Cocoa/Cocoa.h>
+#import "EZWordResultView.h"
+
+@class EZQueryResult;
+@class EZQueryService;
+
+NS_ASSUME_NONNULL_BEGIN
+
+static const CGFloat EZResultViewMiniHeight = 30;
+
+// ???: If don't inherit from NSTableRowView, NSTextField in cell cannot selectable.
+@interface EZResultView : NSView
+
+@property (nonatomic, strong) EZQueryResult *result;
+@property (nonatomic, strong) EZQueryService *service;
+
+@property (nonatomic, strong) EZWordResultView *wordResultView;
+
+@property (nonatomic, assign) BOOL popupStyle;
+@property (nonatomic, assign) BOOL inlineCard;
+
+
+@property (nonatomic, copy) void (^clickArrowBlock)(EZQueryResult *result);
+@property (nonatomic, copy) void (^retryBlock)(EZQueryResult *result);
+
+@property (nonatomic, copy) void (^queryTextBlock)(NSString *word);
+
+/// Forwarded to the word result view; see `EZWordResultView.inlineLookupBlock`.
+@property (nonatomic, copy) void (^inlineLookupBlock)(NSString *word, NSTextView *anchor, NSRange range);
+
+- (void)updateLoadingAnimation;
+
+@end
+
+NS_ASSUME_NONNULL_END

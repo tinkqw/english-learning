@@ -1,0 +1,12 @@
+{
+ "generated_at": "2026-10-01T23:30:00+08:00",
+ "words": [
+  {"表达": "touch base", "释义": "碰个头，简单对一下", "例句": "Let's touch base again next week.", "例句译文": "我们下周再碰一下。", "例句来源": "生成", "标签": "业务沟通", "来源原文": "Let's touch base again next week.", "时间": "2026-09-28", "状态": "想练"},
+  {"表达": "for visibility", "释义": "供相关人知悉", "例句": "Adding the design team here for visibility.", "例句译文": "把设计团队加进来知悉一下。", "例句来源": "原句", "标签": "业务沟通", "来源原文": "Adding the design team here for visibility.", "时间": "2026-09-29", "状态": "想练"},
+  {"表达": "roll out", "释义": "逐步上线、推广", "例句": "We plan to roll out the feature gradually.", "例句译文": "我们计划逐步上线这个功能。", "例句来源": "生成", "标签": "业务沟通", "来源原文": "gradual rollout", "时间": "2026-09-30", "状态": "新收"},
+  {"表达": "edge case", "释义": "边界情况", "例句": "This edge case only happens on older devices.", "例句译文": "这个边界情况只在老设备上出现。", "例句来源": "生成", "标签": "技术术语", "来源原文": "edge case", "时间": "2026-09-30", "状态": "新收"},
+  {"表达": "bear with me", "释义": "请稍等 / 请多包涵", "例句": "Bear with me while I share my screen.", "例句译文": "稍等，我共享一下屏幕。", "例句来源": "生成", "标签": "日常", "来源原文": "bear with me", "时间": "2026-10-01", "状态": "已学会"}
+ ],
+ "fsrs_active": [],
+ "counts": {"total": 5, "新收": 2, "想练": 2, "已学会": 1, "fsrs_active": 0}
+}

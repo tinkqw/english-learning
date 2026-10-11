@@ -1,0 +1,695 @@
+//
+//  EventMonitor.swift
+//  Easydict
+//
+//  Created by tisfeng on 2025/xx/xx.
+//  Copyright © 2025 izual. All rights reserved.
+//
+
+import AppKit
+import Carbon
+import Foundation
+
+extension CGEventFlags {
+    /// Converts CGEventFlags into NSEvent modifier flags.
+    fileprivate func toNSEventModifierFlags() -> NSEvent.ModifierFlags {
+        var flags = NSEvent.ModifierFlags()
+        if contains(.maskCommand) { flags.insert(.command) }
+        if contains(.maskAlternate) { flags.insert(.option) }
+        if contains(.maskShift) { flags.insert(.shift) }
+        if contains(.maskControl) { flags.insert(.control) }
+        if contains(.maskSecondaryFn) { flags.insert(.function) }
+        return flags
+    }
+}
+
+// MARK: - EventMonitor
+
+/// Monitors user input events and provides selected text extraction.
+@objc(EZEventMonitor)
+@objcMembers
+final class EventMonitor: NSObject {
+    // MARK: Lifecycle
+
+    private override init() {
+        self.eventMonitorEngine = EventMonitorEngine()
+        self.highFrequencyEventMonitorEngine = EventMonitorEngine()
+        self.eventTapMonitor = EventTapMonitor()
+        self.selectionWorkflow = SelectionWorkflow()
+        self.triggerEvaluator = TriggerEvaluator()
+        self.popButtonController = PopButtonVisibilityController()
+        self.appContextProvider = AppContextProvider()
+        self.systemUtility = SystemUtility.shared
+        self.mouseMovedThrottleGate = ThrottleGate(interval: Constants.mouseMovedThrottleInterval)
+        super.init()
+        configureDependencies()
+    }
+
+    // MARK: Internal
+
+    // MARK: Public Types
+
+    typealias SelectedTextBlock = @convention(block) (String) -> ()
+    typealias VoidBlock = @convention(block) () -> ()
+    typealias PointBlock = @convention(block) (CGPoint) -> ()
+
+    static let shared = EventMonitor()
+
+    // MARK: Public Properties (ObjC visible)
+
+    var selectedText: String = ""
+    var actionType: ActionType = .autoSelectQuery
+    var selectTextType: EZSelectTextType = .accessibility
+    var triggerType: EZTriggerType = []
+
+    var frontmostApplication: NSRunningApplication?
+    var browserTabURLString: String?
+
+    var startPoint: CGPoint = .zero
+    var endPoint: CGPoint = .zero
+
+    @objc(isSelectedTextEditable) var isSelectedTextEditable: Bool = false
+
+    var selectedTextBlock: SelectedTextBlock?
+    var dismissPopButtonBlock: VoidBlock?
+    var dismissAllNotPinndFloatingWindowBlock: VoidBlock?
+    var doubleCommandBlock: VoidBlock?
+    var leftMouseDownBlock: PointBlock?
+    var rightMouseDownBlock: PointBlock?
+
+    // MARK: Public API
+
+    /// Fetches selected text using the active strategy pipeline.
+    /// - Important: Completion is not guaranteed to be called on main thread.
+    func getSelectedTextWithCompletion(_ completion: @escaping (String?) -> ()) {
+        selectionWorkflow.getSelectedTextSnapshot { [weak self] snapshot in
+            guard let self else {
+                completion(snapshot?.text)
+                return
+            }
+            if let snapshot {
+                selectTextType = snapshot.selectTextType
+                isSelectedTextEditable = snapshot.isEditable
+                handleSelectedText(snapshot.text)
+            } else {
+                isSelectedTextEditable = selectionWorkflow.isSelectedTextEditable
+            }
+            completion(snapshot?.text)
+        }
+    }
+
+    /// Async Swift-only convenience.
+    func getSelectedText() async -> String? {
+        await selectionWorkflow.getSelectedText()
+    }
+
+    /// Clears transient pop-button monitors after the button opens a query window.
+    func consumePopButtonActivation() {
+        autoSelectionGeneration &+= 1
+        cancelDismissPopButton()
+        cancelDelayGetSelectedText()
+        popButtonController.isPopButtonVisible = false
+        mouseMovedThrottleGate.reset()
+        stopHighFrequencyEventMonitor()
+        eventTapMonitor.stop()
+    }
+
+    func addLocalMonitorWithEvent(_ mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> ()) {
+        eventMonitorEngine.monitor(type: .local, mask: mask, handler: handler)
+    }
+
+    func addGlobalMonitorWithEvent(_ mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> ()) {
+        eventMonitorEngine.monitor(type: .global, mask: mask, handler: handler)
+    }
+
+    func bothMonitorWithEvent(_ mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> ()) {
+        eventMonitorEngine.monitor(type: .both, mask: mask, handler: handler)
+    }
+
+    func addBothMonitor(_ isAutoSelectTextEnabled: Bool) {
+        isAutoSelectTextMonitoringEnabled = isAutoSelectTextEnabled
+        let eventMask: NSEvent.EventTypeMask = [
+            .leftMouseDown,
+            .leftMouseUp,
+            .rightMouseDown,
+            .keyDown,
+            .keyUp,
+            .flagsChanged,
+            .leftMouseDragged,
+            .cursorUpdate,
+        ]
+
+        bothMonitorWithEvent(eventMask) { [weak self] event in
+            self?.handleMonitorEvent(event)
+        }
+
+        guard isAutoSelectTextEnabled, popButtonController.isPopButtonVisible else {
+            stopHighFrequencyEventMonitor()
+            return
+        }
+        startHighFrequencyEventMonitor()
+    }
+
+    func start() {
+        eventMonitorEngine.start()
+    }
+
+    func stop() {
+        eventMonitorEngine.stop()
+        highFrequencyEventMonitorEngine.stop()
+        eventTapMonitor.stop()
+        if let escapeKeyMonitor {
+            NSEvent.removeMonitor(escapeKeyMonitor)
+            self.escapeKeyMonitor = nil
+        }
+    }
+
+    /// Monitor local and global events.
+    func startMonitor() {
+        escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == kVK_Escape {
+                logInfo("escape")
+            }
+            return event
+        }
+        addBothMonitor(MyConfiguration.shared.autoSelectText)
+    }
+
+    func isAccessibilityEnabled() -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let isEnabled = AXIsProcessTrustedWithOptions(options)
+        logInfo("accessibilityEnabled: \(isEnabled)")
+        return isEnabled
+    }
+
+    func authorize() {
+        logInfo("AuthorizeButton clicked")
+        let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        if let url = URL(string: urlString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func updateSelectedTextEditableState() {
+        isSelectedTextEditable = systemUtility.isFocusedTextField()
+    }
+
+    func frameFromStartPoint(_ startPoint: CGPoint, endPoint: CGPoint) -> CGRect {
+        RectHelper.frame(from: startPoint, to: endPoint, expandedRadius: Constants.expandedRadius)
+    }
+
+    // MARK: Private
+
+    private enum Constants {
+        static let dismissPopButtonDelay: TimeInterval = 0.1
+        static let delayGetSelectedText: TimeInterval = 0.1
+        static let expandedRadius: CGFloat = 120
+        static let highFrequencyEventMask: NSEvent.EventTypeMask = [.scrollWheel, .mouseMoved]
+        /// Throttle interval for mouse-moved events to reduce CPU usage.
+        static let mouseMovedThrottleInterval: TimeInterval = 0.1
+    }
+
+    private let eventMonitorEngine: EventMonitorEngine
+    private let highFrequencyEventMonitorEngine: EventMonitorEngine
+    private let eventTapMonitor: EventTapMonitor
+    private let selectionWorkflow: SelectionWorkflow
+    private let triggerEvaluator: TriggerEvaluator
+    private let popButtonController: PopButtonVisibilityController
+    private let appContextProvider: AppContextProvider
+    private let systemUtility: SystemUtility
+    private let languageDetector = AppleLanguageDetector()
+
+    private var lastEvent: NSEvent?
+    private var currentModifierFlags: NSEvent.ModifierFlags = []
+    private var shouldBypassDismissIgnore = false
+    private var mouseMovedThrottleGate: ThrottleGate
+    private var escapeKeyMonitor: Any?
+    private var isAutoSelectTextMonitoringEnabled = false
+    private var autoSelectionGeneration: UInt = 0
+}
+
+// MARK: - Private Implementation
+
+extension EventMonitor {
+    private func configureDependencies() {
+        eventMonitorEngine.eventHandler = { [weak self] event in
+            self?.handleMonitorEvent(event)
+        }
+
+        eventTapMonitor.keyDownHandler = { [weak self] keyCode, flags in
+            self?.handleEventTapKeyDown(keyCode: keyCode, flags: flags)
+        }
+
+        selectionWorkflow.contextProvider = appContextProvider
+        selectionWorkflow.systemUtility = systemUtility
+        selectionWorkflow.onBrowserURLUpdated = { [weak self] urlString in
+            self?.browserTabURLString = urlString
+        }
+
+        selectionWorkflow.onStartMonitoringKeyboard = { [weak self] in
+            guard MyConfiguration.shared.autoSelectText else { return }
+            self?.eventTapMonitor.start()
+        }
+
+        triggerEvaluator.onTrigger = { [weak self] trigger in
+            self?.triggerType = trigger
+        }
+
+        popButtonController.dismissHandler = { [weak self] in
+            self?.dismissPopButton()
+        }
+    }
+
+    private func handleMonitorEvent(_ event: NSEvent) {
+        #if DEBUG
+        let eventStart = CFAbsoluteTimeGetCurrent()
+        defer {
+            let elapsed = (CFAbsoluteTimeGetCurrent() - eventStart) * 1000
+            if elapsed > 16 {
+                logInfo("Slow event handler: \(event.type.rawValue) took \(String(format: "%.1f", elapsed))ms")
+            }
+        }
+        #endif
+
+        lastEvent = event
+        popButtonController.lastEvent = event
+
+        frontmostApplication = appContextProvider.frontmostApplication
+        let mouseLocation = NSEvent.mouseLocation
+
+        switch event.type {
+        case .leftMouseUp:
+            EZWindowManager.shared().lastPoint = mouseLocation
+            endPoint = mouseLocation
+            if triggerEvaluator.checkIfLeftMouseDragged() {
+                triggerType = .dragged
+                let frontmostTriggerType = appContextProvider.frontmostAppTriggerType(
+                    forceGetSelectedTextType: MyConfiguration.shared.forceGetSelectedTextType
+                )
+                if frontmostTriggerType.contains(triggerType) {
+                    autoGetSelectedText()
+                }
+            }
+        case .leftMouseDown:
+            triggerEvaluator.updateRecordedEvents(event)
+            handleLeftMouseDown(event, mouseLocation: mouseLocation)
+        case .leftMouseDragged:
+            triggerEvaluator.updateRecordedEvents(event)
+            endPoint = mouseLocation
+        case .rightMouseDown:
+            rightMouseDownBlock?(mouseLocation)
+        case .keyDown:
+//            log("keyDown, characters: \(event.characters ?? "")")
+//            log("keyCode: \(event.keyCode)")
+
+            EZWindowManager.shared().lastPoint = mouseLocation
+            // Cmd+A only requests a selection change in the frontmost app.
+            // Handle it before the generic key-down dismissal path and read
+            // the selection later.
+            if handleSelectAllShortcut(event) {
+                return
+            }
+
+            if shouldDismissForKeyCombination(
+                keyCode: Int(event.keyCode),
+                modifierFlags: event.modifierFlags.union(currentModifierFlags)
+            ) {
+                forceDismissPopButton()
+                return
+            }
+
+            if popButtonController.isPopButtonVisible {
+                dismissPopButton()
+            }
+        case .keyUp:
+            // Delayed Cmd+A selection reading may show the pop button before
+            // key-up, so key-up must not fall through to the default dismissal
+            // path.
+            break
+        case .flagsChanged:
+//            log("flagsChanged, modifierFlags rawValue: \(event.modifierFlags.rawValue)")
+//            log("keyCode: \(event.keyCode)")
+
+            currentModifierFlags = event.modifierFlags
+            EZWindowManager.shared().lastPoint = mouseLocation
+            if event.keyCode == kVK_Command || event.keyCode == kVK_RightCommand {
+                triggerEvaluator.updateCommandKeyEvents(event)
+                if triggerEvaluator.checkIfDoubleCommandEvents() {
+                    dismissPopButton()
+                    doubleCommandBlock?()
+                }
+            }
+        default:
+            if popButtonController.isPopButtonVisible {
+                dismissPopButton()
+            }
+        }
+    }
+
+    /// Routes Cmd+A through the delayed auto-selection workflow.
+    ///
+    /// The key-down event arrives before the frontmost app may finish updating
+    /// its selection, so this method schedules selection reading for later.
+    /// Returns `true` when Cmd+A is consumed, including repeat events that
+    /// should neither reschedule selection reading nor dismiss the pop button.
+    private func handleSelectAllShortcut(_ event: NSEvent) -> Bool {
+        guard isSelectAllShortcut(event) else { return false }
+        guard !event.isARepeat else { return true }
+
+        let frontmostTriggerType = appContextProvider.frontmostAppTriggerType(
+            forceGetSelectedTextType: MyConfiguration.shared.forceGetSelectedTextType
+        )
+        guard frontmostTriggerType.contains(.selectAllShortcut) else {
+            logInfo("Frontmost app trigger type does not contain select all shortcut")
+            return false
+        }
+
+        guard enabledAutoSelectText() else { return false }
+        guard systemUtility.canInsertText() else {
+            logInfo("Focused element is not an editable text element, skip select all shortcut auto get selected text")
+            return false
+        }
+
+        triggerType = .selectAllShortcut
+        if popButtonController.isPopButtonVisible {
+            dismissPopButton()
+        }
+
+        // Wait until the frontmost app applies Cmd+A; reading immediately can
+        // capture the previous, empty, or partial selection.
+        cancelDelayGetSelectedText()
+        delayGetSelectedText()
+
+        return true
+    }
+
+    /// Checks for plain Cmd+A while excluding variants such as Cmd+Shift+A.
+    private func isSelectAllShortcut(_ event: NSEvent) -> Bool {
+        guard event.keyCode == kVK_ANSI_A else { return false }
+
+        // Command flag changes can arrive separately from key-down events.
+        let modifierFlags = event.modifierFlags.union(currentModifierFlags)
+        let disallowedModifiers: NSEvent.ModifierFlags = [.option, .shift, .control, .function]
+        return modifierFlags.contains(.command) && modifierFlags.isDisjoint(with: disallowedModifiers)
+    }
+
+    /// Handles temporary high-frequency input monitors while the pop button is visible.
+    private func handleHighFrequencyMonitorEvent(_ event: NSEvent) {
+        lastEvent = event
+        popButtonController.lastEvent = event
+
+        switch event.type {
+        case .mouseMoved:
+            handleMouseMoved()
+        case .scrollWheel:
+            popButtonController.handleScrollWheel(event)
+        default:
+            break
+        }
+    }
+
+    private func handleLeftMouseDown(_ event: NSEvent, mouseLocation: CGPoint) {
+        startPoint = mouseLocation
+        leftMouseDownBlock?(mouseLocation)
+        dismissWindowsIfMouseLocationOutsideFloatingWindow(mouseLocation)
+
+        if popButtonController.isPopButtonVisible, isMouseInPopButtonWindow(mouseLocation) {
+            // Avoid dismissing the pop button before its click action fires.
+            return
+        }
+
+        let frontmostTriggerType = appContextProvider.frontmostAppTriggerType(
+            forceGetSelectedTextType: MyConfiguration.shared.forceGetSelectedTextType
+        )
+
+        if event.clickCount == 2 {
+            triggerType = .doubleClick
+            if frontmostTriggerType.contains(triggerType) {
+                delayGetSelectedText(0.2)
+            }
+        } else if event.clickCount == 3 {
+            triggerType = .tripleClick
+            if frontmostTriggerType.contains(triggerType) {
+                cancelDelayGetSelectedText()
+                delayGetSelectedText()
+            }
+        } else if event.modifierFlags.contains(.shift) {
+            triggerType = .shift
+            if frontmostTriggerType.contains(triggerType) {
+                delayGetSelectedText()
+            }
+        } else {
+            dismissPopButton()
+        }
+    }
+
+    private func dismissWindowsIfMouseLocationOutsideFloatingWindow(_ mouseLocation: CGPoint) {
+        guard let floatingWindow = EZWindowManager.shared().floatingWindow else {
+            dismissAllNotPinndFloatingWindowBlock?()
+            return
+        }
+
+        // Use AppKit's own hit-testing (the window at the cursor point) rather than
+        // manual `frame.contains` math. The latter misjudged on-window clicks as
+        // "outside" on multi-display / scaled setups, dismissing the input window
+        // mid-typing. `windowNumber(at:)` resolves the actual window under the
+        // cursor in the same coordinate space as the event, regardless of display
+        // arrangement or whether our (accessory) app is active.
+        let windowNumberAtPoint = NSWindow.windowNumber(at: mouseLocation, belowWindowWithWindowNumber: 0)
+        let clickedOnFloatingWindow = windowNumberAtPoint == floatingWindow.windowNumber
+
+        if !clickedOnFloatingWindow {
+            dismissAllNotPinndFloatingWindowBlock?()
+        }
+    }
+
+    private func isMouseInPopButtonWindow(_ mouseLocation: CGPoint) -> Bool {
+        let popButtonWindow = EZWindowManager.shared().popButtonWindow
+        let windowNumberAtPoint = NSWindow.windowNumber(at: mouseLocation, belowWindowWithWindowNumber: 0)
+        return windowNumberAtPoint == popButtonWindow.windowNumber
+    }
+
+    /// Handles mouse-moved events with throttling to prevent excessive computation.
+    private func handleMouseMoved() {
+        guard popButtonController.isPopButtonVisible else { return }
+        guard mouseMovedThrottleGate.shouldAllow() else { return }
+
+        popButtonController.handleMouseMoved(isMouseInExpandedFrame: isMouseInPopButtonExpandedFrame())
+    }
+
+    /// Reads the current selection and updates the auto-query pop button state.
+    ///
+    /// This method stays Objective-C visible because delayed mouse and keyboard
+    /// triggers schedule it with `perform(_:with:afterDelay:)`.
+    @objc
+    private func autoGetSelectedText() {
+        guard enabledAutoSelectText() else { return }
+        logInfo("auto get selected text")
+
+        guard systemUtility.isFocusedSelectableTextElement() else {
+            logInfo("Focused element is not selectable text element, skip auto get selected text")
+            return
+        }
+
+        popButtonController.resetScrollState()
+        actionType = .autoSelectQuery
+        autoSelectionGeneration &+= 1
+        let selectionGeneration = autoSelectionGeneration
+
+        selectionWorkflow.getSelectedTextSnapshot(onStartMonitoringKeyboard: { [weak self] in
+            guard let self,
+                  autoSelectionGeneration == selectionGeneration,
+                  MyConfiguration.shared.autoSelectText
+            else {
+                return
+            }
+            eventTapMonitor.start()
+        }) { [weak self] snapshot in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                guard self.autoSelectionGeneration == selectionGeneration else { return }
+                if let snapshot {
+                    self.selectTextType = snapshot.selectTextType
+                    self.isSelectedTextEditable = snapshot.isEditable
+                } else {
+                    self.isSelectedTextEditable = self.selectionWorkflow.isSelectedTextEditable
+                }
+                self.handleSelectedText(snapshot?.text)
+            }
+        }
+    }
+
+    private func enabledAutoSelectText() -> Bool {
+        let config = MyConfiguration.shared
+        let enabled = config.autoSelectText && !config.disabledAutoSelect
+        if !enabled {
+            logInfo("disabled autoSelectText")
+        }
+        return enabled
+    }
+
+    private func handleSelectedText(_ text: String?) {
+        let trimmed = (text ?? "").removeInvisibleChar().trim()
+        guard !trimmed.isEmpty else { return }
+        let shouldShow = (actionType == .autoSelectQuery) && shouldShowAutoQueryIcon(for: trimmed)
+        let updateUI = { [weak self] in
+            guard let self else { return }
+            guard shouldShow else {
+                forceDismissPopButton()
+                eventTapMonitor.stop()
+                return
+            }
+
+            mouseMovedThrottleGate.reset()
+            popButtonController.isPopButtonVisible = true
+            startHighFrequencyEventMonitor()
+            selectedText = trimmed
+            cancelDismissPopButton()
+            selectedTextBlock?(trimmed)
+        }
+
+        if Thread.isMainThread {
+            updateUI()
+        } else {
+            DispatchQueue.main.async(execute: updateUI)
+        }
+    }
+
+    private func shouldShowAutoQueryIcon(for text: String) -> Bool {
+        let config = MyConfiguration.shared
+        let minLength = max(0, min(50, config.autoShowQueryIconMinTextLength))
+        guard text.count >= minLength else {
+            logInfo("text length \(text.count) < minLength \(minLength), do not show auto query icon")
+            return false
+        }
+
+        let excludedLanguage = config.autoShowQueryIconExcludedLanguage
+        let detectedLanguage = languageDetector.detectLanguage(text: text)
+        let shouldShowAutoQueryIcon = detectedLanguage != excludedLanguage
+        logInfo(
+            "detected language: \(detectedLanguage), excluded language: \(excludedLanguage), shouldShowAutoQueryIcon: \(shouldShowAutoQueryIcon)"
+        )
+
+        return shouldShowAutoQueryIcon
+    }
+
+    @objc
+    private func dismissPopButton() {
+        if shouldBypassDismissIgnore == false, popButtonController.shouldIgnoreDismiss() {
+            return
+        }
+        autoSelectionGeneration &+= 1
+        dismissPopButtonBlock?()
+        popButtonController.isPopButtonVisible = false
+        mouseMovedThrottleGate.reset()
+        stopHighFrequencyEventMonitor()
+        eventTapMonitor.stop()
+    }
+
+    private func delayDismissPopButton() {
+        delayDismissPopButton(delay: Constants.dismissPopButtonDelay)
+    }
+
+    /// Handles CGEventTap key-down callbacks for global key combinations.
+    private func handleEventTapKeyDown(keyCode: CGKeyCode, flags: CGEventFlags) {
+        if shouldDismissForKeyCombination(keyCode: Int(keyCode), modifierFlags: flags.toNSEventModifierFlags()) {
+            forceDismissPopButton()
+        } else {
+            delayDismissPopButton()
+        }
+    }
+
+    /// Determines whether a key combination should dismiss the pop button.
+    private func shouldDismissForKeyCombination(
+        keyCode: Int,
+        modifierFlags: NSEvent.ModifierFlags
+    )
+        -> Bool {
+        guard popButtonController.isPopButtonVisible else { return false }
+        let supportedModifiers: NSEvent.ModifierFlags = [.command, .option, .shift, .control, .function]
+        guard !modifierFlags.isDisjoint(with: supportedModifiers) else { return false }
+        guard isModifierKeyCode(keyCode) == false else { return false }
+        return true
+    }
+
+    /// Checks whether the key code belongs to a modifier key.
+    private func isModifierKeyCode(_ keyCode: Int) -> Bool {
+        let modifierKeyCodes: Set<Int> = [
+            Int(kVK_Command),
+            Int(kVK_RightCommand),
+            Int(kVK_Shift),
+            Int(kVK_RightShift),
+            Int(kVK_Option),
+            Int(kVK_RightOption),
+            Int(kVK_Control),
+            Int(kVK_RightControl),
+            Int(kVK_Function),
+        ]
+        return modifierKeyCodes.contains(keyCode)
+    }
+
+    /// Dismisses the pop button even if dismiss ignores are active.
+    private func forceDismissPopButton() {
+        log("forceDismissPopButton")
+        if popButtonController.isPopButtonVisible {
+            shouldBypassDismissIgnore = true
+            dismissPopButton()
+            shouldBypassDismissIgnore = false
+        }
+    }
+
+    private func delayDismissPopButton(delay: TimeInterval) {
+        cancelDismissPopButton()
+        perform(#selector(dismissPopButton), with: nil, afterDelay: delay)
+    }
+
+    private func cancelDismissPopButton() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(dismissPopButton), object: nil)
+    }
+
+    private func delayGetSelectedText() {
+        perform(#selector(autoGetSelectedText), with: nil, afterDelay: Constants.delayGetSelectedText)
+    }
+
+    private func delayGetSelectedText(_ delay: TimeInterval) {
+        perform(#selector(autoGetSelectedText), with: nil, afterDelay: delay)
+    }
+
+    private func cancelDelayGetSelectedText() {
+        NSObject.cancelPreviousPerformRequests(
+            withTarget: self,
+            selector: #selector(autoGetSelectedText),
+            object: nil
+        )
+    }
+
+    private func isMouseInPopButtonExpandedFrame() -> Bool {
+        let popButtonWindow = EZWindowManager.shared().popButtonWindow
+        let popButtonFrame = popButtonWindow.frame
+        let centerPoint = CGPoint(
+            x: popButtonFrame.origin.x + popButtonFrame.size.width / 2,
+            y: popButtonFrame.origin.y + popButtonFrame.size.height / 2
+        )
+        let mouseLocation = NSEvent.mouseLocation
+        return GeometryHelper.isPoint(
+            mouseLocation,
+            insideCircleWithCenter: centerPoint,
+            radius: Constants.expandedRadius
+        )
+    }
+
+    /// Starts monitoring mouse-moved and scroll-wheel events only while the pop button is visible.
+    private func startHighFrequencyEventMonitor() {
+        guard isAutoSelectTextMonitoringEnabled else { return }
+
+        highFrequencyEventMonitorEngine
+            .monitor(type: .both, mask: Constants.highFrequencyEventMask) { [weak self] event in
+                self?.handleHighFrequencyMonitorEvent(event)
+            }
+    }
+
+    /// Stops the temporary high-frequency event monitors.
+    private func stopHighFrequencyEventMonitor() {
+        highFrequencyEventMonitorEngine.stop()
+    }
+}

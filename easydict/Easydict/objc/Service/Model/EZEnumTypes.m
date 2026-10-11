@@ -1,0 +1,122 @@
+//
+//  EZEnumTypes.m
+//  Easydict
+//
+//  Created by tisfeng on 2023/4/18.
+//  Copyright © 2023 izual. All rights reserved.
+//
+
+#import "EZEnumTypes.h"
+
+#import "OrderedDictionary+Variadic.h"
+
+#pragma mark - EZServiceType
+NSString *const EZServiceTypeGoogle = @"Google";
+NSString *const EZServiceTypeBaidu = @"Baidu";
+NSString *const EZServiceTypeYoudao = @"Youdao";
+NSString *const EZServiceTypeApple = @"Apple";
+NSString *const EZServiceTypeDeepL = @"DeepL";
+NSString *const EZServiceTypeVolcano = @"Volcano";
+NSString *const EZServiceTypeOpenAI = @"OpenAI";
+NSString *const EZServiceTypeCustomOpenAI = @"CustomOpenAI";
+NSString *const EZServiceTypeBuiltInAI = @"BuiltInAI";
+NSString *const EZServiceTypeBing = @"Bing";
+NSString *const EZServiceTypeNiuTrans = @"NiuTrans";
+NSString *const EZServiceTypeCaiyun = @"Caiyun";
+NSString *const EZServiceTypeTencent = @"Tencent";
+NSString *const EZServiceTypeAlibaba = @"Alibaba";
+NSString *const EZServiceTypeGemini = @"Gemini";
+NSString *const EZServiceTypeOllama = @"Ollama";
+NSString *const EZServiceTypePolishing = @"Polishing";
+NSString *const EZServiceTypeSummary = @"Summary";
+NSString *const EZServiceTypeDeepSeek = @"DeepSeek";
+NSString *const EZServiceTypeAppleDictionary = @"AppleDictionary";
+NSString *const EZServiceTypeGroq = @"Groq";
+NSString *const EZServiceTypeZhipu = @"Zhipu";
+NSString *const EZServiceTypeMiniMax = @"MiniMax";
+NSString *const EZServiceTypeGitHub = @"GitHub";
+NSString *const EZServiceTypeDoubao = @"Doubao";
+NSString *const EZServiceTypeClaudeCode = @"ClaudeCode";
+NSString *const EZServiceTypeClaude = @"Claude";
+NSString *const EZServiceTypeCodexCLI = @"CodexCLI";
+NSString *const EZServiceTypeMDict = @"MDict";
+
+NSString *const EZQueryTextTypeKey = @"QueryTextType";
+NSString *const EZIntelligentQueryTextTypeKey = @"IntelligentQueryTextType";
+
+
+#pragma mark - EZActionType
+NSString *const EZActionTypeNone = @"none";
+NSString *const EZActionTypeAutoSelectQuery = @"auto_select_query";
+NSString *const EZActionTypeShortcutQuery = @"shortcut_query";
+NSString *const EZActionTypeInputQuery = @"input_query";
+NSString *const EZActionTypeOCRQuery = @"ocr_query";
+NSString *const EZActionTypeScreenshotOCR = @"silent_screenshot_ocr";
+NSString *const EZActionTypeInvokeQuery = @"invoke_query";
+NSString *const EZActionTypePasteboardOCR = @"pasteboard_ocr";
+NSString *const EZActionTypePasteboardTranslate = @"pasteboard_translate";
+NSString *const EZActionTypeTranslateAndReplace = @"translate_and_replace";
+NSString *const EZActionTypePolishAndReplace = @"polish_and_replace";
+
+#pragma mark - EZSelectTextType
+NSString *const EZSelectTextTypeAccessibility = @"accessibility_select_text";
+NSString *const EZSelectTextTypeSimulatedKey = @"simulate_key_select_text";
+NSString *const EZSelectTextTypeAppleScript = @"applescript_select_text";
+NSString *const EZSelectTextTypeMenuBarActionCopy = @"menu_bar_action_copy_select_text";
+
+NSString *const EZDefaultTTSServiceKey = @"EZDefaultTTSServiceKey";
+
+
+@implementation EZEnumTypes
+
++ (NSString *)stringValueOfTriggerType:(EZTriggerType)triggerType {
+    switch (triggerType) {
+        case EZTriggerTypeNone:
+            return @"none";
+        case EZTriggerTypeDoubleClick:
+            return @"double_click";
+        case EZTriggerTypeTripleClick:
+            return @"triple_click";
+        case EZTriggerTypeDragged:
+            return @"dragged";
+        case EZTriggerTypeShift:
+            return @"shift";
+        case EZTriggerTypeSelectAllShortcut:
+            return @"select_all_shortcut";
+    }
+}
+
++ (NSString *)windowName:(EZWindowType)type {
+    switch (type) {
+        case EZWindowTypeMain:
+            return @"main_window";
+        case EZWindowTypeFixed:
+            return @"fixed_window";
+        case EZWindowTypeMini:
+            return @"mini_window";
+        default:
+            return @"none_window";
+    }
+}
+
++ (MMOrderedDictionary *)fixedWindowPositionDict {
+    MMOrderedDictionary *dict = [[MMOrderedDictionary alloc] initWithKeysAndObjects:
+                                                                 @(EZShowWindowPositionRight), NSLocalizedString(@"fixed_window_position_right", nil),
+                                                                 @(EZShowWindowPositionMouse), NSLocalizedString(@"fixed_window_position_mouse", nil),
+                                                                 @(EZShowWindowPositionFormer), NSLocalizedString(@"fixed_window_position_former", nil),
+                                                                 @(EZShowWindowPositionCenter), NSLocalizedString(@"fixed_window_position_center", nil),
+                                                                 nil];
+
+    return dict;
+}
+
++ (MMOrderedDictionary *)translateWindowTypeDict {
+    MMOrderedDictionary *dict = [[MMOrderedDictionary alloc] initWithKeysAndObjects:
+                                                                 @(EZWindowTypeMini), NSLocalizedString(@"mini_window", nil),
+                                                                 @(EZWindowTypeFixed), NSLocalizedString(@"fixed_window", nil),
+                                                                 nil];
+
+    return dict;
+}
+
+@end
